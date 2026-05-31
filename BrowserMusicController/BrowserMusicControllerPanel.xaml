@@ -31,6 +31,33 @@
                 </Setter>
             </Style>
 
+            <Style x:Key="RoundIconToggleButtonStyle" TargetType="ToggleButton">
+                <Setter Property="Foreground" Value="#FFF7F8FA"/>
+                <Setter Property="Background" Value="#66FFFFFF"/>
+                <Setter Property="BorderBrush" Value="#7FFFFFFF"/>
+                <Setter Property="BorderThickness" Value="1"/>
+                <Setter Property="FontFamily" Value="Segoe MDL2 Assets"/>
+                <Setter Property="FontSize" Value="16"/>
+                <Setter Property="Cursor" Value="Hand"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ToggleButton">
+                            <Grid>
+                                <Ellipse Name="Bg" Fill="{TemplateBinding Background}" Stroke="{TemplateBinding BorderBrush}" StrokeThickness="{TemplateBinding BorderThickness}"/>
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Grid>
+                            <ControlTemplate.Triggers>
+                                <Trigger Property="IsChecked" Value="False">
+                                    <Setter TargetName="Bg" Property="Fill" Value="#22FFFFFF"/>
+                                    <Setter TargetName="Bg" Property="Stroke" Value="#44FFFFFF"/>
+                                    <Setter Property="Foreground" Value="#66FFFFFF"/>
+                                </Trigger>
+                            </ControlTemplate.Triggers>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+
             <Style x:Key="MiniPillButtonStyle" TargetType="Button">
                 <Setter Property="Foreground" Value="#FFE8EAED"/>
                 <Setter Property="Background" Value="#3AFFFFFF"/>
@@ -97,13 +124,14 @@
             </Style>
         </Grid.Resources>
 
-        <Image Name="AlbumBackgroundImage" Stretch="UniformToFill" Opacity="0.45"/>
+        <Image Name="AlbumBackgroundImage" Stretch="UniformToFill" Opacity="0.58"/>
         <Rectangle Name="BackgroundShade" Fill="#CC111318"/>
         <Canvas Name="WaveCanvas" Height="148" HorizontalAlignment="Stretch" VerticalAlignment="Bottom" Margin="14,0,14,12" Opacity="0.9" IsHitTestVisible="False" ClipToBounds="True"/>
 
         <Border Name="MainCard" Margin="10" Padding="10" CornerRadius="14" BorderBrush="#66FFFFFF" BorderThickness="1" Background="#B31D212B">
             <Grid>
                 <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
@@ -120,14 +148,9 @@
                         <TextBlock Name="HeaderText" Text="Spotify / Browser Media" FontSize="10" FontWeight="SemiBold" Foreground="#D8FFFFFF"/>
                         <TextBlock Name="TrackTitleText" Text="再生中のメディアを待機中" Margin="0,3,0,0" FontSize="22" FontWeight="SemiBold" Foreground="#FFF8F9FA" TextWrapping="Wrap" TextTrimming="CharacterEllipsis" LineStackingStrategy="BlockLineHeight" LineHeight="26" MaxHeight="52"/>
                         <TextBlock Name="ArtistText" Text="Spotify / YouTube など" Margin="0,2,0,0" FontSize="13" Foreground="#D0FFFFFF" TextTrimming="CharacterEllipsis"/>
-                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0" VerticalAlignment="Center">
-                            <TextBlock Text="Session" Foreground="#C8FFFFFF" FontSize="11" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                            <ComboBox Name="SessionSelector" Width="190" Height="22" FontSize="11" SelectionChanged="SessionSelector_SelectionChanged"/>
-                            <Button Content="⟳" Width="24" Height="22" FontSize="11" Margin="6,0,0,0" ToolTip="セッション再検出" Click="RefreshSessionsButton_Click"/>
-                        </StackPanel>
                     </StackPanel>
 
-                    <Border Grid.Column="1" Width="74" Height="74" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,0,4,0" CornerRadius="10" BorderBrush="#66FFFFFF" BorderThickness="1" Background="#332A2E37" ClipToBounds="True">
+                    <Border Name="ThumbnailBorder" Grid.Column="1" Width="74" Height="74" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,0,4,0" CornerRadius="10" BorderBrush="#66FFFFFF" BorderThickness="1" Background="#332A2E37" ClipToBounds="True">
                         <Image Name="ThumbnailImage" Stretch="UniformToFill" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                     </Border>
                 </Grid>
@@ -144,20 +167,20 @@
                 </Grid>
 
                 <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,2,0,4">
-                    <Button Name="PrevButton" Content="" Style="{StaticResource RoundIconButtonStyle}" Width="40" Height="40" FontSize="16" Margin="6,0" Click="PrevButton_Click"/>
-                    <Button Name="PlayPauseButton" Content="" Style="{StaticResource RoundIconButtonStyle}" Width="52" Height="52" FontSize="19" Margin="7,0" Click="PlayPauseButton_Click"/>
-                    <Button Name="NextButton" Content="" Style="{StaticResource RoundIconButtonStyle}" Width="40" Height="40" FontSize="16" Margin="6,0" Click="NextButton_Click"/>
-                    <Button Name="StopButton" Content="" Style="{StaticResource RoundIconButtonStyle}" Width="40" Height="40" FontSize="14" Margin="6,0" Click="StopButton_Click"/>
+                    <Button Name="PrevButton" Content="&#xE892;" Style="{StaticResource RoundIconButtonStyle}" Width="40" Height="40" FontSize="16" Margin="6,0" Click="PrevButton_Click"/>
+                    <Button Name="PlayPauseButton" Content="&#xE768;" Style="{StaticResource RoundIconButtonStyle}" Width="52" Height="52" FontSize="19" Margin="7,0" Click="PlayPauseButton_Click"/>
+                    <Button Name="NextButton" Content="&#xE893;" Style="{StaticResource RoundIconButtonStyle}" Width="40" Height="40" FontSize="16" Margin="6,0" Click="NextButton_Click"/>
+                    <Button Name="StopButton" Content="&#xE71A;" Style="{StaticResource RoundIconButtonStyle}" Width="40" Height="40" FontSize="14" Margin="6,0" Click="StopButton_Click"/>
+                    <ToggleButton Name="WaveToggleButton" Content="&#xE9D9;" Style="{StaticResource RoundIconToggleButtonStyle}" IsChecked="True" Width="40" Height="40" Margin="6,0" VerticalAlignment="Center" Checked="WaveToggleButton_Checked" Unchecked="WaveToggleButton_Unchecked"/>
                 </StackPanel>
 
-                <Grid Grid.Row="3">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Name="StatusText" Grid.Column="0" Text="スタンバイ中..." FontSize="10" Foreground="#A6FFFFFF" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                    <ToggleButton Name="WaveToggleButton" Grid.Column="1" Content="波形" IsChecked="True" Width="58" Height="26" FontSize="11" Margin="8,0,0,0" Checked="WaveToggleButton_Checked" Unchecked="WaveToggleButton_Unchecked"/>
-                </Grid>
+                <TextBlock Grid.Row="3" Name="StatusText" Text="スタンバイ中..." FontSize="10" Foreground="#A6FFFFFF" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+
+                <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,6,0,0" VerticalAlignment="Center">
+                    <TextBlock Name="SessionLabelText" Text="Session" Foreground="#C8FFFFFF" FontSize="11" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <ComboBox Name="SessionSelector" Width="190" Height="22" FontSize="11" SelectionChanged="SessionSelector_SelectionChanged"/>
+                    <Button Name="RefreshSessionsMiniButton" Content="⟳" Width="24" Height="22" FontSize="11" Margin="6,0,0,0" ToolTip="セッション再検出" Click="RefreshSessionsButton_Click"/>
+                </StackPanel>
             </Grid>
         </Border>
     </Grid>

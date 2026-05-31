@@ -2,12 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Runtime.InteropServices;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
@@ -15,6 +17,8 @@ using Microsoft.Win32;
 using NAudio.Wave;
 using Windows.Media.Control;
 using Windows.Storage.Streams;
+using Windows.UI.Notifications;
+using Windows.Data.Xml.Dom;
 
 namespace BrowserMusicController
 {
@@ -24,6 +28,13 @@ namespace BrowserMusicController
     /// </summary>
     public partial class BrowserMusicControllerPanel : UserControl
     {
+        private enum HostThemeTone
+        {
+            Light,
+            Dark,
+            Black,
+        }
+
         private sealed class SessionEntry
         {
             public required string SourceAppId { get; init; }
@@ -31,10 +42,9 @@ namespace BrowserMusicController
             public required GlobalSystemMediaTransportControlsSession Session { get; init; }
         }
 
-        private bool isSeekingManually = false;
+        private bool isSeekingManually;
         private bool isUpdatingSeekFromSession;
         private bool isPlaying;
-        private int currentVolume = 100;
         private TimeSpan currentDuration = TimeSpan.Zero;
         private bool isSessionInitialized;
         private GlobalSystemMediaTransportControlsSessionManager? sessionManager;
@@ -57,6 +67,11 @@ namespace BrowserMusicController
         private volatile float audioLevel;
         private volatile float bassLevel;
         private double bassFilterState;
+        private bool isLightThemeActive;
+        private HostThemeTone hostThemeTone = HostThemeTone.Dark;
+        private readonly SemaphoreSlim _initLock = new(1, 1);
+        private string _lastNotifiedTitle = string.Empty;
+        private ulong _lastThumbnailSize;
 
         private const string GlyphPlay = "\uE768";
         private const string GlyphPause = "\uE769";
@@ -108,6 +123,25 @@ namespace BrowserMusicController
             UpdateStatus("初期化完了");
         }
 
+        private Task RunOnUiThreadAsync(Action action)
+        {
+            if (Dispatcher.CheckAccess())
+            {
+                action();
+                return Task.CompletedTask;
+            }
+
+            return Dispatcher.InvokeAsync(action).Task;
+        }
+
+        private Task RunOnUiThreadAsync(Func<Task> action)
+        {
+            if (Dispatcher.CheckAccess())
+                return action();
+
+            return Dispatcher.InvokeAsync(action).Task.Unwrap();
+        }
+
         private async void BrowserMusicControllerPanel_Loaded(object sender, RoutedEventArgs e)
         {
             ApplyThemeFromHost();
@@ -118,9 +152,11 @@ namespace BrowserMusicController
             await UpdateSessionInfoAsync();
             refreshTimer.Start();
             BuildWaveBars();
-            StartAudioCapture();
             if (WaveToggleButton.IsChecked == true)
+            {
+                StartAudioCapture();
                 waveTimer.Start();
+            }
         }
 
         private void BrowserMusicControllerPanel_Unloaded(object sender, RoutedEventArgs e)
@@ -134,6 +170,7 @@ namespace BrowserMusicController
                 sessionManager.SessionsChanged -= SessionManager_SessionsChanged;
                 sessionManager.CurrentSessionChanged -= SessionManager_CurrentSessionChanged;
             }
+            _initLock.Dispose();
         }
 
         private void BrowserMusicControllerPanel_SizeChanged(object sender, SizeChangedEventArgs e)
@@ -182,12 +219,14 @@ namespace BrowserMusicController
         {
             WaveCanvas.Visibility = Visibility.Visible;
             BuildWaveBars();
+            StartAudioCapture();
             waveTimer.Start();
         }
 
         private void WaveToggleButton_Unchecked(object sender, RoutedEventArgs e)
         {
             waveTimer.Stop();
+            StopAudioCapture();
             WaveCanvas.Visibility = Visibility.Collapsed;
         }
 
@@ -305,8 +344,12 @@ namespace BrowserMusicController
             if (isSessionInitialized)
                 return;
 
+            await _initLock.WaitAsync();
             try
             {
+                if (isSessionInitialized)
+                    return;
+
                 sessionManager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync();
                 sessionManager.SessionsChanged += SessionManager_SessionsChanged;
                 sessionManager.CurrentSessionChanged += SessionManager_CurrentSessionChanged;
@@ -319,35 +362,45 @@ namespace BrowserMusicController
                 // 取得失敗時はメディアキー送信フォールバックのみで動作
                 isSessionInitialized = true;
             }
+            finally
+            {
+                _initLock.Release();
+            }
         }
 
         private async void SessionManager_SessionsChanged(GlobalSystemMediaTransportControlsSessionManager sender, SessionsChangedEventArgs args)
         {
-            await RefreshSessionListAsync();
-            SetCurrentSession(GetPreferredSession());
-            await Dispatcher.InvokeAsync(async () => await UpdateSessionInfoAsync());
+            await RunOnUiThreadAsync(async () =>
+            {
+                await RefreshSessionListAsync();
+                SetCurrentSession(GetPreferredSession());
+                await UpdateSessionInfoAsync();
+            });
         }
 
         private async void SessionManager_CurrentSessionChanged(GlobalSystemMediaTransportControlsSessionManager sender, CurrentSessionChangedEventArgs args)
         {
-            await RefreshSessionListAsync();
-            SetCurrentSession(GetPreferredSession());
-            await Dispatcher.InvokeAsync(async () => await UpdateSessionInfoAsync());
+            await RunOnUiThreadAsync(async () =>
+            {
+                await RefreshSessionListAsync();
+                SetCurrentSession(GetPreferredSession());
+                await UpdateSessionInfoAsync();
+            });
         }
 
         private async void CurrentSession_MediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args)
         {
-            await Dispatcher.InvokeAsync(async () => await UpdateSessionInfoAsync());
+            await RunOnUiThreadAsync(UpdateSessionInfoAsync);
         }
 
         private async void CurrentSession_PlaybackInfoChanged(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args)
         {
-            await Dispatcher.InvokeAsync(async () => await RefreshPlaybackStateAsync());
+            await RunOnUiThreadAsync(RefreshPlaybackStateAsync);
         }
 
         private async void CurrentSession_TimelinePropertiesChanged(GlobalSystemMediaTransportControlsSession sender, TimelinePropertiesChangedEventArgs args)
         {
-            await Dispatcher.InvokeAsync(async () => await RefreshPlaybackStateAsync());
+            await RunOnUiThreadAsync(RefreshPlaybackStateAsync);
         }
 
         private async Task UpdateSessionInfoAsync()
@@ -372,6 +425,13 @@ namespace BrowserMusicController
                     TrackTitleText.Text = props.Title;
                     ArtistText.Text = string.IsNullOrWhiteSpace(props.Artist) ? "不明なアーティスト" : props.Artist;
                     UpdateStatus($"接続中: {props.Title}");
+
+                    // 曲が変わったらトースト通知
+                    if (props.Title != _lastNotifiedTitle)
+                    {
+                        _lastNotifiedTitle = props.Title;
+                        ShowTrackToast(props.Title, props.Artist ?? "");
+                    }
                 }
                 else
                 {
@@ -517,13 +577,17 @@ namespace BrowserMusicController
                 case GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused:
                     isPlaying = false;
                     PlayPauseButton.Content = GlyphPlay;
-                    PlayPauseButton.Background = new SolidColorBrush(Color.FromArgb(120, 255, 255, 255));
+                    PlayPauseButton.Background = isLightThemeActive
+                        ? new SolidColorBrush(Color.FromArgb(220, 223, 231, 242))
+                        : new SolidColorBrush(Color.FromArgb(120, 255, 255, 255));
                     HeaderText.Text = "一時停止中 / Browser Media";
                     break;
                 default:
                     isPlaying = false;
                     PlayPauseButton.Content = GlyphPlay;
-                    PlayPauseButton.Background = new SolidColorBrush(Color.FromArgb(120, 255, 255, 255));
+                    PlayPauseButton.Background = isLightThemeActive
+                        ? new SolidColorBrush(Color.FromArgb(220, 223, 231, 242))
+                        : new SolidColorBrush(Color.FromArgb(120, 255, 255, 255));
                     HeaderText.Text = "停止中 / Browser Media";
                     break;
             }
@@ -536,6 +600,31 @@ namespace BrowserMusicController
 
             return $"{time.Minutes}:{time.Seconds:00}";
         }
+
+
+        private static void ShowTrackToast(string title, string artist)
+        {
+            try
+            {
+                var xml = new XmlDocument();
+                var artistLine = string.IsNullOrWhiteSpace(artist) ? "" : $"<text>{SecurityEncodeXml(artist)}</text>";
+                xml.LoadXml($@"<toast duration=""short"">
+                    <visual><binding template=""ToastGeneric"">
+                        <text>&#127925; {SecurityEncodeXml(title)}</text>
+                        {artistLine}
+                    </binding></visual>
+                </toast>");
+                var notifier = ToastNotificationManager.CreateToastNotifier("BrowserMusicController");
+                notifier.Show(new ToastNotification(xml));
+            }
+            catch
+            {
+                // トースト非対応環境では無視
+            }
+        }
+
+        private static string SecurityEncodeXml(string text)
+            => text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
 
         private GlobalSystemMediaTransportControlsSession? GetPreferredSession()
         {
@@ -590,6 +679,12 @@ namespace BrowserMusicController
 
         private async Task RefreshSessionListAsync()
         {
+            if (!Dispatcher.CheckAccess())
+            {
+                await RunOnUiThreadAsync(RefreshSessionListAsync);
+                return;
+            }
+
             if (sessionManager == null)
                 return;
 
@@ -684,6 +779,7 @@ namespace BrowserMusicController
         {
             if (thumbnail == null)
             {
+                _lastThumbnailSize = 0;
                 ThumbnailImage.Source = null;
                 AlbumBackgroundImage.Source = null;
                 return;
@@ -695,11 +791,16 @@ namespace BrowserMusicController
                 if (stream.Size == 0 || stream.Size > int.MaxValue)
                     return;
 
+                // サイズが同じなら同じサムネ → フェードをスキップ
+                if (stream.Size == _lastThumbnailSize && ThumbnailImage.Source != null)
+                    return;
+
                 using var inputStream = stream.GetInputStreamAt(0);
                 using var reader = new DataReader(inputStream);
                 await reader.LoadAsync((uint)stream.Size);
                 var bytes = new byte[(int)stream.Size];
                 reader.ReadBytes(bytes);
+                _lastThumbnailSize = stream.Size;
 
                 var image = new BitmapImage();
                 using (var ms = new MemoryStream(bytes))
@@ -711,31 +812,230 @@ namespace BrowserMusicController
                     image.Freeze();
                 }
 
-                ThumbnailImage.Source = image;
-                AlbumBackgroundImage.Source = image;
+                // ThumbnailImage・AlbumBackgroundImage 両方をフェードアウト → ソース切り替え → フェードイン
+                var albumBgTargetOpacity = AlbumBackgroundImage.Opacity;
+                var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(120));
+                fadeOut.Completed += (_, _) =>
+                {
+                    ThumbnailImage.Source = image;
+                    AlbumBackgroundImage.Source = image;
+                    ThumbnailImage.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(220)));
+                    AlbumBackgroundImage.BeginAnimation(OpacityProperty, new DoubleAnimation(0, albumBgTargetOpacity, TimeSpan.FromMilliseconds(220)));
+                };
+                ThumbnailImage.BeginAnimation(OpacityProperty, fadeOut);
+                AlbumBackgroundImage.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(120)));
+
+                // アルバムアートの主要色を波形に反映
+                ApplyDominantColorToWave(image);
             }
             catch
             {
             }
         }
 
+        private void ApplyDominantColorToWave(BitmapImage image)
+        {
+            try
+            {
+                // サムネを小さくスケールして高速にサンプリング
+                var scaled = new TransformedBitmap(image, new ScaleTransform(16.0 / image.PixelWidth, 16.0 / image.PixelHeight));
+                var formatted = new FormatConvertedBitmap(scaled, PixelFormats.Bgr32, null, 0);
+                formatted.Freeze();
+
+                var stride = formatted.PixelWidth * 4;
+                var pixels = new byte[formatted.PixelHeight * stride];
+                formatted.CopyPixels(pixels, stride, 0);
+
+                long r = 0, g = 0, b = 0;
+                var count = pixels.Length / 4;
+                for (var i = 0; i < pixels.Length; i += 4)
+                {
+                    b += pixels[i];
+                    g += pixels[i + 1];
+                    r += pixels[i + 2];
+                }
+
+                var ar = (byte)Math.Clamp(r / count, 0, 255);
+                var ag = (byte)Math.Clamp(g / count, 0, 255);
+                var ab = (byte)Math.Clamp(b / count, 0, 255);
+
+                // 彩度を上げて波形に映えるようにブースト
+                var max = Math.Max(Math.Max(ar, ag), ab);
+                var factor = max > 30 ? Math.Min(255.0 / max, 2.2) : 1.0;
+                ar = (byte)Math.Clamp(ar * factor, 0, 255);
+                ag = (byte)Math.Clamp(ag * factor, 0, 255);
+                ab = (byte)Math.Clamp(ab * factor, 0, 255);
+
+                waveBrush = new SolidColorBrush(Color.FromArgb(230, ar, ag, ab));
+
+                // 波形バーの色を更新
+                foreach (var bar in waveBars)
+                    bar.Fill = waveBrush;
+            }
+            catch
+            {
+                // 失敗しても波形色はデフォルトのまま
+            }
+        }
+
         private void ApplyThemeFromHost()
         {
-            var isLight = DetectLightTheme();
+            hostThemeTone = DetectHostThemeTone();
+            isLightThemeActive = hostThemeTone == HostThemeTone.Light;
 
-            if (isLight)
+            if (isLightThemeActive)
             {
-                BackgroundShade.Fill = new SolidColorBrush(Color.FromArgb(220, 16, 18, 24));
-                MainCard.Background = new SolidColorBrush(Color.FromArgb(210, 22, 25, 34));
-                MainCard.BorderBrush = new SolidColorBrush(Color.FromArgb(120, 255, 255, 255));
-                waveBrush = new SolidColorBrush(Color.FromArgb(245, 255, 255, 255));
+                AlbumBackgroundImage.Opacity = 0.66;
+                BackgroundShade.Fill = new SolidColorBrush(Color.FromArgb(68, 244, 247, 253));
+                MainCard.Background = new SolidColorBrush(Color.FromArgb(166, 252, 254, 255));
+                MainCard.BorderBrush = new SolidColorBrush(Color.FromArgb(124, 82, 94, 113));
+                if (ThumbnailBorder != null)
+                {
+                    ThumbnailBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(112, 79, 90, 109));
+                    ThumbnailBorder.Background = new SolidColorBrush(Color.FromArgb(72, 189, 201, 222));
+                }
+
+                HeaderText.Foreground = new SolidColorBrush(Color.FromArgb(220, 39, 53, 74));
+                TrackTitleText.Foreground = new SolidColorBrush(Color.FromArgb(255, 21, 31, 48));
+                ArtistText.Foreground = new SolidColorBrush(Color.FromArgb(232, 50, 62, 82));
+                SessionLabelText.Foreground = new SolidColorBrush(Color.FromArgb(225, 45, 59, 82));
+                ElapsedTimeText.Foreground = new SolidColorBrush(Color.FromArgb(225, 53, 67, 90));
+                TimeDisplay.Foreground = new SolidColorBrush(Color.FromArgb(225, 53, 67, 90));
+                StatusText.Foreground = new SolidColorBrush(Color.FromArgb(210, 67, 81, 103));
+
+                SessionSelector.Background = new SolidColorBrush(Color.FromArgb(232, 246, 250, 255));
+                SessionSelector.Foreground = new SolidColorBrush(Color.FromArgb(255, 29, 40, 60));
+                SessionSelector.BorderBrush = new SolidColorBrush(Color.FromArgb(140, 95, 108, 129));
+
+                RefreshSessionsMiniButton.Background = new SolidColorBrush(Color.FromArgb(218, 235, 241, 251));
+                RefreshSessionsMiniButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 31, 44, 67));
+                RefreshSessionsMiniButton.BorderBrush = new SolidColorBrush(Color.FromArgb(140, 88, 101, 124));
+
+                PrevButton.Background = new SolidColorBrush(Color.FromArgb(220, 227, 233, 244));
+                PrevButton.BorderBrush = new SolidColorBrush(Color.FromArgb(138, 102, 113, 130));
+                PrevButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 40, 54, 74));
+
+                PlayPauseButton.BorderBrush = new SolidColorBrush(Color.FromArgb(150, 100, 110, 126));
+                PlayPauseButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 255, 255, 255));
+
+                NextButton.Background = new SolidColorBrush(Color.FromArgb(220, 227, 233, 244));
+                NextButton.BorderBrush = new SolidColorBrush(Color.FromArgb(138, 102, 113, 130));
+                NextButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 40, 54, 74));
+
+                StopButton.Background = new SolidColorBrush(Color.FromArgb(220, 227, 233, 244));
+                StopButton.BorderBrush = new SolidColorBrush(Color.FromArgb(138, 102, 113, 130));
+                StopButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 40, 54, 74));
+
+                WaveToggleButton.Background = new SolidColorBrush(Color.FromArgb(214, 236, 242, 252));
+                WaveToggleButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 33, 46, 66));
+                WaveToggleButton.BorderBrush = new SolidColorBrush(Color.FromArgb(138, 98, 111, 132));
+
+                waveBrush = new SolidColorBrush(Color.FromArgb(238, 47, 62, 88));
+            }
+            else if (hostThemeTone == HostThemeTone.Black)
+            {
+                AlbumBackgroundImage.Opacity = 0.64;
+                BackgroundShade.Fill = new SolidColorBrush(Color.FromArgb(118, 4, 5, 8));
+                MainCard.Background = new SolidColorBrush(Color.FromArgb(122, 10, 13, 20));
+                MainCard.BorderBrush = new SolidColorBrush(Color.FromArgb(118, 248, 251, 255));
+                if (ThumbnailBorder != null)
+                {
+                    ThumbnailBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(118, 250, 252, 255));
+                    ThumbnailBorder.Background = new SolidColorBrush(Color.FromArgb(44, 34, 40, 52));
+                }
+
+                HeaderText.Foreground = new SolidColorBrush(Color.FromArgb(228, 242, 247, 255));
+                TrackTitleText.Foreground = new SolidColorBrush(Color.FromArgb(255, 249, 251, 255));
+                ArtistText.Foreground = new SolidColorBrush(Color.FromArgb(218, 238, 244, 255));
+                SessionLabelText.Foreground = new SolidColorBrush(Color.FromArgb(214, 236, 242, 255));
+                ElapsedTimeText.Foreground = new SolidColorBrush(Color.FromArgb(214, 237, 243, 255));
+                TimeDisplay.Foreground = new SolidColorBrush(Color.FromArgb(214, 237, 243, 255));
+                StatusText.Foreground = new SolidColorBrush(Color.FromArgb(188, 230, 237, 250));
+
+                SessionSelector.Background = new SolidColorBrush(Color.FromArgb(198, 22, 28, 40));
+                SessionSelector.Foreground = new SolidColorBrush(Color.FromArgb(255, 245, 248, 255));
+                SessionSelector.BorderBrush = new SolidColorBrush(Color.FromArgb(124, 245, 250, 255));
+
+                RefreshSessionsMiniButton.Background = new SolidColorBrush(Color.FromArgb(110, 240, 246, 255));
+                RefreshSessionsMiniButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 244, 247, 255));
+                RefreshSessionsMiniButton.BorderBrush = new SolidColorBrush(Color.FromArgb(122, 246, 250, 255));
+
+                PrevButton.Background = new SolidColorBrush(Color.FromArgb(86, 244, 249, 255));
+                PrevButton.BorderBrush = new SolidColorBrush(Color.FromArgb(122, 246, 250, 255));
+                PrevButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 246, 249, 255));
+
+                PlayPauseButton.BorderBrush = new SolidColorBrush(Color.FromArgb(132, 245, 249, 255));
+                PlayPauseButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 247, 250, 255));
+
+                NextButton.Background = new SolidColorBrush(Color.FromArgb(86, 244, 249, 255));
+                NextButton.BorderBrush = new SolidColorBrush(Color.FromArgb(122, 246, 250, 255));
+                NextButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 246, 249, 255));
+
+                StopButton.Background = new SolidColorBrush(Color.FromArgb(86, 244, 249, 255));
+                StopButton.BorderBrush = new SolidColorBrush(Color.FromArgb(122, 246, 250, 255));
+                StopButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 246, 249, 255));
+
+                WaveToggleButton.Background = new SolidColorBrush(Color.FromArgb(96, 240, 247, 255));
+                WaveToggleButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 245, 248, 255));
+                WaveToggleButton.BorderBrush = new SolidColorBrush(Color.FromArgb(122, 246, 250, 255));
+
+                waveBrush = new SolidColorBrush(Color.FromArgb(236, 246, 250, 255));
             }
             else
             {
-                BackgroundShade.Fill = new SolidColorBrush(Color.FromArgb(190, 8, 10, 14));
-                MainCard.Background = new SolidColorBrush(Color.FromArgb(180, 18, 21, 30));
+                AlbumBackgroundImage.Opacity = 0.60;
+                BackgroundShade.Fill = new SolidColorBrush(Color.FromArgb(140, 8, 10, 14));
+                MainCard.Background = new SolidColorBrush(Color.FromArgb(136, 18, 21, 30));
                 MainCard.BorderBrush = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255));
+                if (ThumbnailBorder != null)
+                {
+                    ThumbnailBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(102, 255, 255, 255));
+                    ThumbnailBorder.Background = new SolidColorBrush(Color.FromArgb(51, 42, 46, 55));
+                }
+
+                HeaderText.Foreground = new SolidColorBrush(Color.FromArgb(216, 255, 255, 255));
+                TrackTitleText.Foreground = new SolidColorBrush(Color.FromArgb(255, 248, 249, 250));
+                ArtistText.Foreground = new SolidColorBrush(Color.FromArgb(208, 255, 255, 255));
+                SessionLabelText.Foreground = new SolidColorBrush(Color.FromArgb(200, 255, 255, 255));
+                ElapsedTimeText.Foreground = new SolidColorBrush(Color.FromArgb(214, 255, 255, 255));
+                TimeDisplay.Foreground = new SolidColorBrush(Color.FromArgb(214, 255, 255, 255));
+                StatusText.Foreground = new SolidColorBrush(Color.FromArgb(166, 255, 255, 255));
+
+                SessionSelector.Background = new SolidColorBrush(Color.FromArgb(255, 44, 50, 62));
+                SessionSelector.Foreground = new SolidColorBrush(Color.FromArgb(255, 242, 245, 249));
+                SessionSelector.BorderBrush = new SolidColorBrush(Color.FromArgb(110, 255, 255, 255));
+
+                RefreshSessionsMiniButton.Background = new SolidColorBrush(Color.FromArgb(128, 255, 255, 255));
+                RefreshSessionsMiniButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 247, 248, 250));
+                RefreshSessionsMiniButton.BorderBrush = new SolidColorBrush(Color.FromArgb(127, 255, 255, 255));
+
+                PrevButton.Background = new SolidColorBrush(Color.FromArgb(102, 255, 255, 255));
+                PrevButton.BorderBrush = new SolidColorBrush(Color.FromArgb(127, 255, 255, 255));
+                PrevButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 247, 248, 250));
+
+                PlayPauseButton.BorderBrush = new SolidColorBrush(Color.FromArgb(127, 255, 255, 255));
+                PlayPauseButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 247, 248, 250));
+
+                NextButton.Background = new SolidColorBrush(Color.FromArgb(102, 255, 255, 255));
+                NextButton.BorderBrush = new SolidColorBrush(Color.FromArgb(127, 255, 255, 255));
+                NextButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 247, 248, 250));
+
+                StopButton.Background = new SolidColorBrush(Color.FromArgb(102, 255, 255, 255));
+                StopButton.BorderBrush = new SolidColorBrush(Color.FromArgb(127, 255, 255, 255));
+                StopButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 247, 248, 250));
+
+                WaveToggleButton.Background = new SolidColorBrush(Color.FromArgb(108, 255, 255, 255));
+                WaveToggleButton.Foreground = new SolidColorBrush(Color.FromArgb(255, 244, 246, 250));
+                WaveToggleButton.BorderBrush = new SolidColorBrush(Color.FromArgb(118, 255, 255, 255));
+
                 waveBrush = new SolidColorBrush(Color.FromArgb(245, 255, 255, 255));
+            }
+
+            if (!isPlaying)
+            {
+                PlayPauseButton.Background = isLightThemeActive
+                    ? new SolidColorBrush(Color.FromArgb(220, 223, 231, 242))
+                    : new SolidColorBrush(Color.FromArgb(120, 255, 255, 255));
             }
 
             foreach (var bar in waveBars)
@@ -789,11 +1089,10 @@ namespace BrowserMusicController
 
             var center = (waveBars.Count - 1) / 2.0;
             var activeGain = isPlaying ? 1.0 : 0.24;
-            var volumeGain = Math.Clamp(currentVolume / 100.0, 0.1, 1.0);
             var meter = Math.Clamp((double)audioLevel, 0.0, 1.0);
             var bass = Math.Clamp((double)bassLevel, 0.0, 1.0);
             var reactiveGain = isPlaying ? (0.18 + meter * 0.95 + bass * 1.55) : 0.2;
-            var maxAmp = 82 * activeGain * volumeGain * reactiveGain;
+            var maxAmp = 82 * activeGain * reactiveGain;
             var maxBarHeight = Math.Max(10, height - 1);
             var softClipStart = Math.Max(8, maxBarHeight * 0.78);
 
@@ -960,26 +1259,78 @@ namespace BrowserMusicController
             return (0, 0);
         }
 
-        private bool DetectLightTheme()
+        private HostThemeTone DetectHostThemeTone()
         {
-            var window = Window.GetWindow(this);
-            if (window?.Background is SolidColorBrush brush)
+            if (TryGetHostBackgroundColor(out var hostColor))
             {
-                var c = brush.Color;
-                var luminance = (0.299 * c.R + 0.587 * c.G + 0.114 * c.B) / 255.0;
-                return luminance > 0.6;
+                var luminance = GetLuminance(hostColor);
+                if (luminance >= 0.62)
+                    return HostThemeTone.Light;
+                if (luminance <= 0.15)
+                    return HostThemeTone.Black;
+
+                return HostThemeTone.Dark;
             }
 
             try
             {
                 using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
                 var value = key?.GetValue("AppsUseLightTheme") as int?;
-                return value == 1;
+                return value == 1 ? HostThemeTone.Light : HostThemeTone.Dark;
             }
             catch
             {
-                return false;
+                return HostThemeTone.Dark;
             }
+        }
+
+        private bool TryGetHostBackgroundColor(out Color color)
+        {
+            for (DependencyObject? node = this; node != null; node = VisualTreeHelper.GetParent(node))
+            {
+                if (TryGetBackgroundFromNode(node, out color))
+                    return true;
+            }
+
+            var window = Window.GetWindow(this);
+            if (window?.Background is SolidColorBrush brush)
+            {
+                color = brush.Color;
+                if (color.A > 0)
+                    return true;
+            }
+
+            color = default;
+            return false;
+        }
+
+        private static bool TryGetBackgroundFromNode(DependencyObject node, out Color color)
+        {
+            if (node is Panel panel && panel.Background is SolidColorBrush panelBrush && panelBrush.Color.A > 10)
+            {
+                color = panelBrush.Color;
+                return true;
+            }
+
+            if (node is Border border && border.Background is SolidColorBrush borderBrush && borderBrush.Color.A > 10)
+            {
+                color = borderBrush.Color;
+                return true;
+            }
+
+            if (node is Control control && control.Background is SolidColorBrush controlBrush && controlBrush.Color.A > 10)
+            {
+                color = controlBrush.Color;
+                return true;
+            }
+
+            color = default;
+            return false;
+        }
+
+        private static double GetLuminance(Color color)
+        {
+            return (0.299 * color.R + 0.587 * color.G + 0.114 * color.B) / 255.0;
         }
 
         private async Task<bool> TryControlSessionAsync(Func<GlobalSystemMediaTransportControlsSession, Task<bool>> action)
