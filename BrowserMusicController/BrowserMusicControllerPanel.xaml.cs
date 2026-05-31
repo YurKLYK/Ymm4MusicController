@@ -855,6 +855,7 @@ namespace BrowserMusicController
             }
             catch
             {
+                _thumbnailAnimating = false;
             }
         }
 
@@ -948,6 +949,9 @@ namespace BrowserMusicController
             {
                 AlbumBackgroundImage.Opacity = 0.66;
                 _albumBgOpacity = 0.66;
+                BackgroundShade.Fill = new SolidColorBrush(Color.FromArgb(68, 244, 247, 253));
+                MainCard.Background = new SolidColorBrush(Color.FromArgb(166, 252, 254, 255));
+                MainCard.BorderBrush = new SolidColorBrush(Color.FromArgb(124, 82, 94, 113));
                 if (ThumbnailBorder != null)
                 {
                     ThumbnailBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(112, 79, 90, 109));
@@ -995,6 +999,9 @@ namespace BrowserMusicController
             {
                 AlbumBackgroundImage.Opacity = 0.64;
                 _albumBgOpacity = 0.64;
+                BackgroundShade.Fill = new SolidColorBrush(Color.FromArgb(118, 4, 5, 8));
+                MainCard.Background = new SolidColorBrush(Color.FromArgb(122, 10, 13, 20));
+                MainCard.BorderBrush = new SolidColorBrush(Color.FromArgb(118, 248, 251, 255));
                 if (ThumbnailBorder != null)
                 {
                     ThumbnailBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(118, 250, 252, 255));
