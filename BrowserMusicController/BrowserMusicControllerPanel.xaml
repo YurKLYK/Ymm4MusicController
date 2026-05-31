@@ -93,7 +93,7 @@
                                         <RepeatButton Command="Slider.DecreaseLarge" Focusable="False" BorderThickness="0" Background="Transparent">
                                             <RepeatButton.Template>
                                                 <ControlTemplate TargetType="RepeatButton">
-                                                    <Border Height="6" CornerRadius="0" Background="#FFEF9D26"/>
+                                                    <Border Height="6" CornerRadius="0" Background="{DynamicResource SeekProgressBrush}"/>
                                                 </ControlTemplate>
                                             </RepeatButton.Template>
                                         </RepeatButton>
@@ -122,6 +122,8 @@
                     </Setter.Value>
                 </Setter>
             </Style>
+
+            <SolidColorBrush x:Key="SeekProgressBrush" Color="#FFEF9D26"/>
         </Grid.Resources>
 
         <Image Name="AlbumBackgroundImage" Stretch="UniformToFill" Opacity="0.58"/>

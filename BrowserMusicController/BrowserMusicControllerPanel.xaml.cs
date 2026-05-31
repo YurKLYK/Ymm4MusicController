@@ -62,6 +62,8 @@ namespace BrowserMusicController
         private bool hasTimelineSnapshot;
         private readonly List<Rectangle> waveBars = [];
         private SolidColorBrush waveBrush = new(Color.FromArgb(245, 255, 255, 255));
+        private Color accentColor = Color.FromArgb(255, 239, 157, 38);
+        private SolidColorBrush? _seekProgressBrush;
         private double wavePhase;
         private WasapiLoopbackCapture? loopbackCapture;
         private volatile float audioLevel;
@@ -144,6 +146,10 @@ namespace BrowserMusicController
 
         private async void BrowserMusicControllerPanel_Loaded(object sender, RoutedEventArgs e)
         {
+            // Grid.Resources の SeekProgressBrush への参照を保持（DynamicResource は子から親へ探索するため code-behind からは Resources[] で見えない）
+            if (Content is FrameworkElement root && root.Resources["SeekProgressBrush"] is SolidColorBrush sb)
+                _seekProgressBrush = sb;
+
             ApplyThemeFromHost();
             await EnsureMediaSessionAsync();
             if (string.IsNullOrEmpty(selectedSourceAppId))
@@ -390,7 +396,11 @@ namespace BrowserMusicController
 
         private async void CurrentSession_MediaPropertiesChanged(GlobalSystemMediaTransportControlsSession sender, MediaPropertiesChangedEventArgs args)
         {
-            await RunOnUiThreadAsync(UpdateSessionInfoAsync);
+            await RunOnUiThreadAsync(() =>
+            {
+                _lastThumbnailSize = 0; // 曲変更時は強制再取得（同サイズサムネでスキップされるのを防止）
+                return UpdateSessionInfoAsync();
+            });
         }
 
         private async void CurrentSession_PlaybackInfoChanged(GlobalSystemMediaTransportControlsSession sender, PlaybackInfoChangedEventArgs args)
@@ -571,7 +581,7 @@ namespace BrowserMusicController
                 case GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing:
                     isPlaying = true;
                     PlayPauseButton.Content = GlyphPause;
-                    PlayPauseButton.Background = new SolidColorBrush(Color.FromArgb(230, 255, 161, 44));
+                    PlayPauseButton.Background = new SolidColorBrush(Color.FromArgb(230, accentColor.R, accentColor.G, accentColor.B));
                     HeaderText.Text = "再生中 / Browser Media";
                     break;
                 case GlobalSystemMediaTransportControlsSessionPlaybackStatus.Paused:
@@ -859,23 +869,58 @@ namespace BrowserMusicController
                 var ag = (byte)Math.Clamp(g / count, 0, 255);
                 var ab = (byte)Math.Clamp(b / count, 0, 255);
 
-                // 彩度を上げて波形に映えるようにブースト
+                // HSV彩度を計算 — 白/グレー系アルバムアートで波形が白いモヤにならないように
                 var max = Math.Max(Math.Max(ar, ag), ab);
+                var min = Math.Min(Math.Min(ar, ag), ab);
+                var saturation = max > 0 ? (double)(max - min) / max : 0.0;
+
+                // 彩度が低すぎる場合はwaveBrushを更新せず前の色を維持（白いモヤ防止）
+                if (saturation < 0.18)
+                    return;
+
+                // 彩度を上げて波形に映えるようにブースト
                 var factor = max > 30 ? Math.Min(255.0 / max, 2.2) : 1.0;
                 ar = (byte)Math.Clamp(ar * factor, 0, 255);
                 ag = (byte)Math.Clamp(ag * factor, 0, 255);
                 ab = (byte)Math.Clamp(ab * factor, 0, 255);
 
+                accentColor = Color.FromRgb(ar, ag, ab);
                 waveBrush = new SolidColorBrush(Color.FromArgb(230, ar, ag, ab));
 
                 // 波形バーの色を更新
                 foreach (var bar in waveBars)
                     bar.Fill = waveBrush;
+
+                // ボタン・シークバーにもアクセントカラーを適用
+                ApplyAccentColorToUI();
             }
             catch
             {
                 // 失敗しても波形色はデフォルトのまま
             }
+        }
+
+        private void ApplyAccentColorToUI()
+        {
+            var c = accentColor;
+            // シークバーの進捗色
+            if (_seekProgressBrush != null)
+                _seekProgressBrush.Color = c;
+
+            // ボタン背景 — 半透明アクセントカラー
+            var bg = Color.FromArgb(118, c.R, c.G, c.B);
+            var border = Color.FromArgb(175, c.R, c.G, c.B);
+            PrevButton.Background = new SolidColorBrush(bg);
+            PrevButton.BorderBrush = new SolidColorBrush(border);
+            NextButton.Background = new SolidColorBrush(bg);
+            NextButton.BorderBrush = new SolidColorBrush(border);
+            StopButton.Background = new SolidColorBrush(bg);
+            StopButton.BorderBrush = new SolidColorBrush(border);
+            WaveToggleButton.Background = new SolidColorBrush(bg);
+            WaveToggleButton.BorderBrush = new SolidColorBrush(border);
+
+            if (isPlaying)
+                PlayPauseButton.Background = new SolidColorBrush(Color.FromArgb(230, c.R, c.G, c.B));
         }
 
         private void ApplyThemeFromHost()
