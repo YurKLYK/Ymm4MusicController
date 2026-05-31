@@ -64,6 +64,8 @@ namespace BrowserMusicController
         private SolidColorBrush waveBrush = new(Color.FromArgb(245, 255, 255, 255));
         private Color accentColor = Color.FromArgb(255, 239, 157, 38);
         private SolidColorBrush? _seekProgressBrush;
+        private double _albumBgOpacity = 0.60;
+        private bool _accentApplied;
         private double wavePhase;
         private WasapiLoopbackCapture? loopbackCapture;
         private volatile float audioLevel;
@@ -146,9 +148,8 @@ namespace BrowserMusicController
 
         private async void BrowserMusicControllerPanel_Loaded(object sender, RoutedEventArgs e)
         {
-            // Grid.Resources の SeekProgressBrush への参照を保持（DynamicResource は子から親へ探索するため code-behind からは Resources[] で見えない）
-            if (Content is FrameworkElement root && root.Resources["SeekProgressBrush"] is SolidColorBrush sb)
-                _seekProgressBrush = sb;
+            // SeekSlider から FindResource で走査 — Grid.Resources にあるブラシを確実に取得
+            _seekProgressBrush = SeekSlider.FindResource("SeekProgressBrush") as SolidColorBrush;
 
             ApplyThemeFromHost();
             await EnsureMediaSessionAsync();
@@ -450,8 +451,10 @@ namespace BrowserMusicController
                     UpdateStatus("メディアセッションに接続");
                 }
 
+                // アクセントカラーがまだサムネから取れていない場合は強制リトライ
+                if (!_accentApplied)
+                    _lastThumbnailSize = 0;
                 await UpdateThumbnailAsync(props.Thumbnail);
-                await RefreshPlaybackStateAsync();
             }
             catch
             {
@@ -823,14 +826,14 @@ namespace BrowserMusicController
                 }
 
                 // ThumbnailImage・AlbumBackgroundImage 両方をフェードアウト → ソース切り替え → フェードイン
-                var albumBgTargetOpacity = AlbumBackgroundImage.Opacity;
                 var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(120));
+                var targetOpacity = _albumBgOpacity;
                 fadeOut.Completed += (_, _) =>
                 {
                     ThumbnailImage.Source = image;
                     AlbumBackgroundImage.Source = image;
                     ThumbnailImage.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(220)));
-                    AlbumBackgroundImage.BeginAnimation(OpacityProperty, new DoubleAnimation(0, albumBgTargetOpacity, TimeSpan.FromMilliseconds(220)));
+                    AlbumBackgroundImage.BeginAnimation(OpacityProperty, new DoubleAnimation(0, targetOpacity, TimeSpan.FromMilliseconds(220)));
                 };
                 ThumbnailImage.BeginAnimation(OpacityProperty, fadeOut);
                 AlbumBackgroundImage.BeginAnimation(OpacityProperty, new DoubleAnimation(0, TimeSpan.FromMilliseconds(120)));
@@ -885,6 +888,7 @@ namespace BrowserMusicController
                 ab = (byte)Math.Clamp(ab * factor, 0, 255);
 
                 accentColor = Color.FromRgb(ar, ag, ab);
+                _accentApplied = true;
                 waveBrush = new SolidColorBrush(Color.FromArgb(230, ar, ag, ab));
 
                 // 波形バーの色を更新
@@ -931,9 +935,7 @@ namespace BrowserMusicController
             if (isLightThemeActive)
             {
                 AlbumBackgroundImage.Opacity = 0.66;
-                BackgroundShade.Fill = new SolidColorBrush(Color.FromArgb(68, 244, 247, 253));
-                MainCard.Background = new SolidColorBrush(Color.FromArgb(166, 252, 254, 255));
-                MainCard.BorderBrush = new SolidColorBrush(Color.FromArgb(124, 82, 94, 113));
+                _albumBgOpacity = 0.66;
                 if (ThumbnailBorder != null)
                 {
                     ThumbnailBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(112, 79, 90, 109));
@@ -980,9 +982,7 @@ namespace BrowserMusicController
             else if (hostThemeTone == HostThemeTone.Black)
             {
                 AlbumBackgroundImage.Opacity = 0.64;
-                BackgroundShade.Fill = new SolidColorBrush(Color.FromArgb(118, 4, 5, 8));
-                MainCard.Background = new SolidColorBrush(Color.FromArgb(122, 10, 13, 20));
-                MainCard.BorderBrush = new SolidColorBrush(Color.FromArgb(118, 248, 251, 255));
+                _albumBgOpacity = 0.64;
                 if (ThumbnailBorder != null)
                 {
                     ThumbnailBorder.BorderBrush = new SolidColorBrush(Color.FromArgb(118, 250, 252, 255));
@@ -1029,6 +1029,7 @@ namespace BrowserMusicController
             else
             {
                 AlbumBackgroundImage.Opacity = 0.60;
+                _albumBgOpacity = 0.60;
                 BackgroundShade.Fill = new SolidColorBrush(Color.FromArgb(140, 8, 10, 14));
                 MainCard.Background = new SolidColorBrush(Color.FromArgb(136, 18, 21, 30));
                 MainCard.BorderBrush = new SolidColorBrush(Color.FromArgb(90, 255, 255, 255));
