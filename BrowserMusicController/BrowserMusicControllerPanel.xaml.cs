@@ -67,6 +67,7 @@ namespace BrowserMusicController
         private double _albumBgOpacity = 0.60;
         private bool _accentApplied;
         private bool _thumbnailAnimating;
+        private bool _pendingSessionInfoUpdate;
         private BitmapImage? _lastDecodedImage;
         private double wavePhase;
         private WasapiLoopbackCapture? loopbackCapture;
@@ -811,9 +812,12 @@ namespace BrowserMusicController
                 if (stream.Size == _lastThumbnailSize && ThumbnailImage.Source != null)
                     return;
 
-                // アニメーション競合防止 — フェード中は新規呼び出しをスキップ
+                // アニメーション競合防止 — フェード中は新規呼び出しをスキップし、完了後にリトライ予約
                 if (_thumbnailAnimating)
+                {
+                    _pendingSessionInfoUpdate = true;
                     return;
+                }
 
                 using var inputStream = stream.GetInputStreamAt(0);
                 using var reader = new DataReader(inputStream);
@@ -843,7 +847,15 @@ namespace BrowserMusicController
                     ThumbnailImage.Source = image;
                     AlbumBackgroundImage.Source = image;
                     var fadeInThumb = new DoubleAnimation(1, TimeSpan.FromMilliseconds(220));
-                    fadeInThumb.Completed += (_, _) => { _thumbnailAnimating = false; };
+                    fadeInThumb.Completed += async (_, _) =>
+                    {
+                        _thumbnailAnimating = false;
+                        if (_pendingSessionInfoUpdate)
+                        {
+                            _pendingSessionInfoUpdate = false;
+                            await UpdateSessionInfoAsync();
+                        }
+                    };
                     ThumbnailImage.BeginAnimation(OpacityProperty, fadeInThumb);
                     AlbumBackgroundImage.BeginAnimation(OpacityProperty, new DoubleAnimation(0, targetOpacity, TimeSpan.FromMilliseconds(220)));
                 };
