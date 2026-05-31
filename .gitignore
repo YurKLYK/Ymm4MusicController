@@ -1,0 +1,22 @@
+# Build outputs
+**/bin/
+**/obj/
+
+# User / IDE files
+.vs/
+.vscode/
+*.user
+*.suo
+*.cache
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary package extraction folders
+package_temp/build/
+package_temp/*.dll
+package_temp/*.json
+package_temp/*.md
+*.tmp.ymme
+*.tmp.zip

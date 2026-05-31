@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <OutputType>Library</OutputType>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <Platform>AnyCPU</Platform>
+    <PlatformTarget>AnyCPU</PlatformTarget>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <YMM4DirPath>C:\YukkuriMovieMaker_v4\</YMM4DirPath>
+    <YMM4PluginDeployDir>$(YMM4DirPath)user\plugin\BrowserMusicController\</YMM4PluginDeployDir>
+    <SkipYmmPluginCopy>false</SkipYmmPluginCopy>
+  </PropertyGroup>
+
+  <Target Name="PostBuild" AfterTargets="Build" Condition="'$(SkipYmmPluginCopy)' != 'true'">
+    <MakeDir Directories="$(YMM4PluginDeployDir)" />
+    <Delete Files="$(YMM4DirPath)user\plugin\$(AssemblyName).dll" />
+    <Copy SourceFiles="$(OutputPath)$(AssemblyName).dll" DestinationFolder="$(YMM4PluginDeployDir)" />
+  </Target>
+
+  <ItemGroup>
+    <Reference Include="YukkuriMovieMaker.Plugin">
+      <HintPath>$(YMM4DirPath)YukkuriMovieMaker.Plugin.dll</HintPath>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+
+</Project>

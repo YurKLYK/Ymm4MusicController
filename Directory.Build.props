@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project>
+  <PropertyGroup>
+    <!-- YMM4のインストールパスを設定してください -->
+    <YMM4DirPath>C:\YukkuriMovieMaker_v4\</YMM4DirPath>
+  </PropertyGroup>
+</Project>
