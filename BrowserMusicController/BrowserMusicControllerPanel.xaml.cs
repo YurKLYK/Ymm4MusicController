@@ -66,6 +66,8 @@ namespace BrowserMusicController
         private SolidColorBrush? _seekProgressBrush;
         private double _albumBgOpacity = 0.60;
         private bool _accentApplied;
+        private bool _thumbnailAnimating;
+        private BitmapImage? _lastDecodedImage;
         private double wavePhase;
         private WasapiLoopbackCapture? loopbackCapture;
         private volatile float audioLevel;
@@ -451,10 +453,11 @@ namespace BrowserMusicController
                     UpdateStatus("メディアセッションに接続");
                 }
 
-                // アクセントカラーがまだサムネから取れていない場合は強制リトライ
-                if (!_accentApplied)
-                    _lastThumbnailSize = 0;
+                // アクセントカラーがまだ取れていなければ、アニメーションなしで再試行（フリッカー防止）
+                if (!_accentApplied && _lastDecodedImage != null)
+                    ApplyDominantColorToWave(_lastDecodedImage);
                 await UpdateThumbnailAsync(props.Thumbnail);
+                await RefreshPlaybackStateAsync();
             }
             catch
             {
@@ -808,6 +811,10 @@ namespace BrowserMusicController
                 if (stream.Size == _lastThumbnailSize && ThumbnailImage.Source != null)
                     return;
 
+                // アニメーション競合防止 — フェード中は新規呼び出しをスキップ
+                if (_thumbnailAnimating)
+                    return;
+
                 using var inputStream = stream.GetInputStreamAt(0);
                 using var reader = new DataReader(inputStream);
                 await reader.LoadAsync((uint)stream.Size);
@@ -825,14 +832,19 @@ namespace BrowserMusicController
                     image.Freeze();
                 }
 
+                _lastDecodedImage = image;
+
                 // ThumbnailImage・AlbumBackgroundImage 両方をフェードアウト → ソース切り替え → フェードイン
+                _thumbnailAnimating = true;
                 var fadeOut = new DoubleAnimation(0, TimeSpan.FromMilliseconds(120));
                 var targetOpacity = _albumBgOpacity;
                 fadeOut.Completed += (_, _) =>
                 {
                     ThumbnailImage.Source = image;
                     AlbumBackgroundImage.Source = image;
-                    ThumbnailImage.BeginAnimation(OpacityProperty, new DoubleAnimation(1, TimeSpan.FromMilliseconds(220)));
+                    var fadeInThumb = new DoubleAnimation(1, TimeSpan.FromMilliseconds(220));
+                    fadeInThumb.Completed += (_, _) => { _thumbnailAnimating = false; };
+                    ThumbnailImage.BeginAnimation(OpacityProperty, fadeInThumb);
                     AlbumBackgroundImage.BeginAnimation(OpacityProperty, new DoubleAnimation(0, targetOpacity, TimeSpan.FromMilliseconds(220)));
                 };
                 ThumbnailImage.BeginAnimation(OpacityProperty, fadeOut);
