@@ -79,6 +79,15 @@ namespace BrowserMusicController
         private string _lastNotifiedTitle = string.Empty;
         private ulong _lastThumbnailSize;
 
+        // プレビュー自動停止
+        private readonly DispatcherTimer previewWatchTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+        private bool wasYmm4PreviewPlaying;
+        private bool stopOnPreviewEnabled = true;
+        private bool _diagnosticDumped;
+        private System.Reflection.PropertyInfo? _ymm4IsPlayingProp;
+        private static readonly string[] IsPlayingPropNames =
+            ["IsPlaying", "IsPreviewPlaying", "IsPreviewRunning", "IsPlaybackRunning", "IsPreviewActive"];
+
         private const string GlyphPlay = "\uE768";
         private const string GlyphPause = "\uE769";
 
@@ -123,6 +132,7 @@ namespace BrowserMusicController
             InitializeComponent();
             refreshTimer.Tick += RefreshTimer_Tick;
             waveTimer.Tick += WaveTimer_Tick;
+            previewWatchTimer.Tick += PreviewWatchTimer_Tick;
             Loaded += BrowserMusicControllerPanel_Loaded;
             Unloaded += BrowserMusicControllerPanel_Unloaded;
             SizeChanged += BrowserMusicControllerPanel_SizeChanged;
@@ -160,6 +170,7 @@ namespace BrowserMusicController
             await RefreshSessionListAsync();
             await UpdateSessionInfoAsync();
             refreshTimer.Start();
+            previewWatchTimer.Start();
             BuildWaveBars();
             if (WaveToggleButton.IsChecked == true)
             {
@@ -172,6 +183,7 @@ namespace BrowserMusicController
         {
             refreshTimer.Stop();
             waveTimer.Stop();
+            previewWatchTimer.Stop();
             StopAudioCapture();
             DetachCurrentSessionEvents();
             if (sessionManager != null)
@@ -237,6 +249,183 @@ namespace BrowserMusicController
             waveTimer.Stop();
             StopAudioCapture();
             WaveCanvas.Visibility = Visibility.Collapsed;
+        }
+
+        private void PreviewStopToggleButton_Checked(object sender, RoutedEventArgs e)
+        {
+            stopOnPreviewEnabled = true;
+            UpdateStatus("プレビュー自動停止: ON");
+        }
+
+        private void PreviewStopToggleButton_Unchecked(object sender, RoutedEventArgs e)
+        {
+            stopOnPreviewEnabled = false;
+            UpdateStatus("プレビュー自動停止: OFF");
+        }
+
+        private async void PreviewWatchTimer_Tick(object? sender, EventArgs e)
+        {
+            var isPreviewPlaying = IsYmm4PreviewPlaying();
+
+            if (isPreviewPlaying && !wasYmm4PreviewPlaying && stopOnPreviewEnabled)
+            {
+                // プレビュー開始 → 音楽を一時停止
+                var ok = await TryControlSessionAsync(s => s.TryPauseAsync().AsTask());
+                if (!ok)
+                    SendMediaKey(VK_MEDIA_PLAY_PAUSE);
+                UpdateStatus("プレビュー検知: 音楽を一時停止");
+            }
+
+            wasYmm4PreviewPlaying = isPreviewPlaying;
+        }
+
+        private bool IsYmm4PreviewPlaying()
+        {
+            try
+            {
+                // まず自分が乗っているウィンドウ（YMM4本体）を直接取得
+                var window = Window.GetWindow(this);
+
+                // フォールバック: 全ウィンドウから最大面積のものを選ぶ
+                if (window == null)
+                {
+                    window = Application.Current?.Windows
+                        .OfType<Window>()
+                        .Where(w => w.DataContext != null)
+                        .OrderByDescending(w => w.ActualWidth * w.ActualHeight)
+                        .FirstOrDefault();
+                }
+
+                if (window?.DataContext == null)
+                    return false;
+
+                // 初回: 診断ログを書き出す
+                if (!_diagnosticDumped)
+                {
+                    _diagnosticDumped = true;
+                    DumpYmm4DiagnosticLog(window);
+                }
+
+                // キャッシュ済みプロパティがあれば使う
+                if (_ymm4IsPlayingProp != null)
+                {
+                    var cached = _ymm4IsPlayingProp.GetValue(window.DataContext);
+                    return cached is true;
+                }
+
+                var vmType = window.DataContext.GetType();
+                foreach (var propName in IsPlayingPropNames)
+                {
+                    var prop = vmType.GetProperty(propName,
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    if (prop == null || prop.PropertyType != typeof(bool))
+                        continue;
+
+                    _ymm4IsPlayingProp = prop; // キャッシュ
+                    return prop.GetValue(window.DataContext) is true;
+                }
+
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void DumpYmm4DiagnosticLog(Window window)
+        {
+            try
+            {
+                var path = System.IO.Path.Combine(
+                    System.IO.Path.GetTempPath(), "ymm4_preview_diagnostic.txt");
+
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine("=== BrowserMusicController 診断ログ ===");
+                sb.AppendLine($"Time: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                sb.AppendLine($"Window Type: {window.GetType().FullName}");
+                sb.AppendLine($"DataContext Type: {window.DataContext?.GetType().FullName ?? "(null)"}");
+                sb.AppendLine();
+
+                if (window.DataContext != null)
+                {
+                    var props = window.DataContext.GetType()
+                        .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+                        .OrderBy(p => p.Name);
+
+                    sb.AppendLine("-- DataContext のパブリックプロパティ (bool のみ) --");
+                    foreach (var p in props.Where(p => p.PropertyType == typeof(bool)))
+                    {
+                        try
+                        {
+                            var v = p.GetValue(window.DataContext);
+                            sb.AppendLine($"  {p.Name} = {v}");
+                        }
+                        catch
+                        {
+                            sb.AppendLine($"  {p.Name} = (読み取り不可)");
+                        }
+                    }
+
+                    sb.AppendLine();
+                    sb.AppendLine("-- 全プロパティ名 --");
+                    foreach (var p in props)
+                        sb.AppendLine($"  [{p.PropertyType.Name}] {p.Name}");
+                }
+
+                // ActiveTimelineViewModel の中身も調べる
+                var timelineProp = window.DataContext.GetType()
+                    .GetProperty("ActiveTimelineViewModel",
+                        System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                var tlVm = timelineProp?.GetValue(window.DataContext);
+                if (tlVm != null)
+                {
+                    sb.AppendLine();
+                    sb.AppendLine($"=== ActiveTimelineViewModel ({tlVm.GetType().FullName}) ===");
+                    var tlProps = tlVm.GetType()
+                        .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+                        .OrderBy(p => p.Name);
+                    sb.AppendLine("-- bool プロパティ --");
+                    foreach (var p in tlProps.Where(p => p.PropertyType == typeof(bool)))
+                    {
+                        try { sb.AppendLine($"  {p.Name} = {p.GetValue(tlVm)}"); }
+                        catch { sb.AppendLine($"  {p.Name} = (読み取り不可)"); }
+                    }
+                    sb.AppendLine("-- 全プロパティ名 --");
+                    foreach (var p in tlProps)
+                        sb.AppendLine($"  [{p.PropertyType.Name}] {p.Name}");
+
+                    // さらに1段掘り下げて bool を持つ子 VM を探す
+                    foreach (var p in tlProps.Where(p =>
+                        p.PropertyType.Name.Contains("ViewModel") ||
+                        p.PropertyType.Name.Contains("Player") ||
+                        p.PropertyType.Name.Contains("Preview") ||
+                        p.PropertyType.Name.Contains("Playback")))
+                    {
+                        try
+                        {
+                            var child = p.GetValue(tlVm);
+                            if (child == null) continue;
+                            var childBools = child.GetType()
+                                .GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+                                .Where(cp => cp.PropertyType == typeof(bool))
+                                .OrderBy(cp => cp.Name);
+                            if (!childBools.Any()) continue;
+                            sb.AppendLine();
+                            sb.AppendLine($"--- {p.Name} ({child.GetType().FullName}) ---");
+                            foreach (var cp in childBools)
+                            {
+                                try { sb.AppendLine($"  {cp.Name} = {cp.GetValue(child)}"); }
+                                catch { sb.AppendLine($"  {cp.Name} = (読み取り不可)"); }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                System.IO.File.WriteAllText(path, sb.ToString(), System.Text.Encoding.UTF8);
+            }
+            catch { /* 診断失敗は無視 */ }
         }
 
         private async void PlayPauseButton_Click(object sender, RoutedEventArgs e)
